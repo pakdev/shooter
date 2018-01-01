@@ -47,6 +47,9 @@ dependencies {
     compile "org.lwjgl:lwjgl:$lwjglVersion"
     compile "org.lwjgl:lwjgl:$lwjglVersion:$lwjglNatives"
 
+    compile "org.lwjgl:lwjgl-stb:$lwjglVersion"
+    compile "org.lwjgl:lwjgl-stb:$lwjglVersion:$lwjglNatives"
+
     compile "org.lwjgl:lwjgl-glfw:$lwjglVersion"
     compile "org.lwjgl:lwjgl-glfw:$lwjglVersion:$lwjglNatives"
 
@@ -69,7 +72,6 @@ dependencies {
 //        compile "org.lwjgl:lwjgl-opengles:$lwjglVersion"
 //        compile "org.lwjgl:lwjgl-openvr:$lwjglVersion"
 //        compile "org.lwjgl:lwjgl-par:$lwjglVersion"
-//        compile "org.lwjgl:lwjgl-stb:$lwjglVersion"
 //        compile "org.lwjgl:lwjgl-vulkan:$lwjglVersion"
 //        compile "org.lwjgl:lwjgl-xxhash:$lwjglVersion"
 //        compile "org.lwjgl:lwjgl-yoga:$lwjglVersion"
@@ -83,7 +85,6 @@ dependencies {
 //        compile "org.lwjgl:lwjgl-opengles:$lwjglVersion:$lwjglNatives"
 //        compile "org.lwjgl:lwjgl-openvr:$lwjglVersion:$lwjglNatives"
 //        compile "org.lwjgl:lwjgl-par:$lwjglVersion:$lwjglNatives"
-//        compile "org.lwjgl:lwjgl-stb:$lwjglVersion:$lwjglNatives"
 //        compile "org.lwjgl:lwjgl-xxhash:$lwjglVersion:$lwjglNatives"
 //        compile "org.lwjgl:lwjgl-yoga:$lwjglVersion:$lwjglNatives"
 //        compile "org.lwjgl:lwjgl-zstd:$lwjglVersion:$lwjglNatives"

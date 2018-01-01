@@ -15,11 +15,11 @@ class Game {
         // TODO: https://github.com/LWJGL/lwjgl3/blob/72a79be1bfa22bce8713583bcc75feec5d211699/modules/core/src/test/java/org/lwjgl/demo/nuklear/GLFWDemo.java
         val window  = initWindow()
         val gui = Gui(window)
+
         loop(window, gui)
 
         glfwFreeCallbacks(window)
         glfwDestroyWindow(window)
-
         glfwTerminate()
         glfwSetErrorCallback(null).free()
     }
@@ -83,11 +83,15 @@ class Game {
 
             nk_input_end(gui.context)
 
+            // do layout
+
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
 
             gui.render(true)
-
             glfwSwapBuffers(window)
         }
+
+        gui.shutdown()
+
     }
 }
