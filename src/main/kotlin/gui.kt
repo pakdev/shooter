@@ -1,7 +1,9 @@
 package com.petesburgh.shooter
 
+import org.lwjgl.BufferUtils
 import org.lwjgl.glfw.GLFW.*
 import org.lwjgl.nuklear.*
+import org.lwjgl.nuklear.NkConvertConfig.VERTEX_LAYOUT
 import org.lwjgl.nuklear.Nuklear.*
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL12.GL_UNSIGNED_INT_8_8_8_8_REV
@@ -14,31 +16,47 @@ import org.lwjgl.opengl.GL20.*
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.stb.STBTTAlignedQuad
 import org.lwjgl.stb.STBTTFontinfo
+import org.lwjgl.stb.STBTTPackContext
 import org.lwjgl.stb.STBTTPackedchar
 import org.lwjgl.stb.STBTruetype.*
 import org.lwjgl.system.MemoryStack
 import org.lwjgl.system.MemoryUtil.*
 import org.lwjgl.system.Platform
+import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.channels.Channels
+import java.nio.file.Files
+import java.nio.file.Paths
+import kotlin.properties.Delegates
 
 class Gui constructor(window: Long) {
+    private var window by Delegates.notNull<Long>()
+    private var context by Delegates.notNull<NkContext>()
+    private var commands by Delegates.notNull<NkBuffer>()
+    private var defaultFont by Delegates.notNull<NkUserFont>()
+    private var nullTexture by Delegates.notNull<NkDrawNullTexture>()
 
-    val context: NkContext = initialize(window)
+    private var program by Delegates.notNull<Int>()
+    private var vertexShader by Delegates.notNull<Int>()
+    private var fragmentShader by Delegates.notNull<Int>()
+    private var uniformTexture by Delegates.notNull<Int>()
+    private var uniformProjection by Delegates.notNull<Int>()
 
-    private val NK_BUFFER_DEFAULT_INITIAL_SIZE = 4 * 1024L
-    private val MAX_VERTEX_BUFFER = 512 * 1024
-    private val MAX_ELEMENT_BUFFER = 128 * 1024
+    init {
+        this.window = window
+        commands = NkBuffer.create()
+        defaultFont = NkUserFont.create()
+        nullTexture = NkDrawNullTexture.create()
 
-    private val cmds = NkBuffer.create()
-    private val prog = glCreateProgram()
-    private val defaultFont = NkUserFont.create()
-    private val nullTexture = NkDrawNullTexture.create()
-    private val vertexShader = glCreateShader(GL_VERTEX_SHADER)
-    private val fragmentShader = glCreateShader(GL_FRAGMENT_SHADER)
-
-    private val uniformTexture: Int by lazy { glGetUniformLocation(prog, "Texture") }
-    private val uniformProjection: Int by lazy { glGetUniformLocation(prog, "Projection") }
+        // this must occur after the other variables are initialized
+        context  = initialize(window)
+    }
 
     companion object {
+        const val MAX_VERTEX_BUFFER = 512 * 1024L
+        const val MAX_ELEMENT_BUFFER = 128 * 1024L
+        const val NK_BUFFER_DEFAULT_INITIAL_SIZE = 4 * 1024L
+
         val ALLOCATOR = NkAllocator.create()
 
         init {
@@ -54,7 +72,36 @@ class Gui constructor(window: Long) {
         }
     }
 
-    fun render(useAA: Boolean) {
+    fun getNewFrame(): Frame {
+        nk_input_begin(context)
+
+        when {
+            context.input().mouse().grab() -> glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN)
+            context.input().mouse().grabbed() -> glfwSetCursorPos(window,
+                    context.input().mouse().prev().x() as Double,
+                    context.input().mouse().prev().y() as Double)
+            context.input().mouse().ungrab() -> glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL)
+        }
+
+        nk_input_end(context)
+
+        MemoryStack.stackPush().use {
+            val w = it.mallocInt(1)
+            val h = it.mallocInt(1)
+
+            glfwGetWindowSize(window, w, h)
+            val width = w.get(0)
+            val height = h.get(0)
+
+            glfwGetFramebufferSize(window, w, h)
+            val displayWidth = w.get(0)
+            val displayHeight = h.get(0)
+
+            return Frame(width, height, displayWidth, displayHeight)
+        }
+    }
+
+    fun render(frame: Frame, useAA: Boolean) {
         glEnable(GL_BLEND)
         glBlendEquation(GL_FUNC_ADD)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -64,30 +111,97 @@ class Gui constructor(window: Long) {
         glActiveTexture(GL_TEXTURE0)
 
         // setup program
-        glUseProgram(prog)
+        glUseProgram(program)
         glUniform1i(uniformTexture, 0)
 
         MemoryStack.stackPush().use {
             glUniformMatrix4fv(uniformProjection, false, it.floats(
-                    2.0f / width, 0.0f, 0.0f, 0.0f,
-                    0.0f, -2.0f / height, 0.0f, 0.0f,
+                    2.0f / frame.width, 0.0f, 0.0f, 0.0f,
+                    0.0f, -2.0f / frame.height, 0.0f, 0.0f,
                     0.0f, 0.0f, -1.0f, 0.0f,
                     -1.0f, 1.0f, 0.0f, 1.0f
             ))
         }
-        glViewport(0, 0, display_width, display_height)
+
+        glViewport(0, 0, frame.displayWidth, frame.displayHeight)
+
+        glBufferData(GL_ARRAY_BUFFER, MAX_VERTEX_BUFFER, GL_STREAM_DRAW)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, MAX_ELEMENT_BUFFER, GL_STREAM_DRAW)
+
+        val vertices = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY, MAX_VERTEX_BUFFER, null)
+        val elements = glMapBuffer(GL_ELEMENT_ARRAY_BUFFER, GL_WRITE_ONLY, MAX_ELEMENT_BUFFER, null)
+
+        val aa = when (useAA) {
+            true -> NK_ANTI_ALIASING_ON
+            else -> NK_ANTI_ALIASING_OFF
+        }
+
+        MemoryStack.stackPush().use {
+            val config = with (NkConvertConfig.callocStack(it)) {
+                vertex_alignment(4)
+                vertex_size(20)
+                vertex_layout(VERTEX_LAYOUT)
+                null_texture(nullTexture)
+                circle_segment_count(22)
+                curve_segment_count(22)
+                arc_segment_count(22)
+                global_alpha(1.0f)
+                shape_AA(aa)
+                line_AA(aa)
+                this
+            }
+
+            val vbuf = NkBuffer.mallocStack(it)
+            val ebuf = NkBuffer.mallocStack(it)
+
+            nk_buffer_init_fixed(vbuf, vertices)
+            nk_buffer_init_fixed(ebuf, elements)
+            nk_convert(context, commands, vbuf, ebuf, config)
+        }
+
+        glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER)
+        glUnmapBuffer(GL_ARRAY_BUFFER)
+
+        var offset: Long = NULL
+        var cmd = nk__draw_begin(context, commands)
+        while (cmd != null) {
+            if (cmd.elem_count() == 0) {
+                continue
+            }
+
+            glBindTexture(GL_TEXTURE_2D, cmd.texture().id())
+            glScissor(
+                    (cmd.clip_rect().x() * frame.scaleX) as Int,
+                    ((frame.height - cmd.clip_rect().y() + cmd.clip_rect().h()) * frame.scaleY) as Int,
+                    (cmd.clip_rect().w() * frame.scaleX) as Int,
+                    (cmd.clip_rect().h() * frame.scaleY) as Int)
+            glDrawElements(GL_TRIANGLES, cmd.elem_count(), GL_UNSIGNED_SHORT, offset)
+            offset += cmd.elem_count() * 2
+
+            cmd = nk__draw_next(cmd, commands, context)
+        }
+
+        nk_clear(context)
+
+        // default OpenGL state
+        glUseProgram(0)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+        glDisable(GL_BLEND)
+        glDisable(GL_SCISSOR_TEST)
     }
 
     fun shutdown() {
         nk_free(context)
-        glDetachShader(prog, vertexShader)
-        glDetachShader(prog, fragmentShader)
+        glDetachShader(program, vertexShader)
+        glDetachShader(program, fragmentShader)
         glDeleteShader(vertexShader)
         glDeleteShader(fragmentShader)
-        glDeleteProgram(prog)
+        glDeleteProgram(program)
         glDeleteTextures(defaultFont.texture().id())
         glDeleteTextures(nullTexture.texture().id())
-        nk_buffer_free(cmds)
+        nk_buffer_free(commands)
         defaultFont.query().free()
         defaultFont.width().free()
     }
@@ -195,7 +309,7 @@ class Gui constructor(window: Long) {
             void main() {
                 Frag_UV = TexCoord;
                 Frag_Color = Color;
-                gl_Position = ProjMatrix * vec4(Position.xy, 0, 1);
+                gl_Position = Projection * vec4(Position.xy, 0, 1);
             }
             """.trimIndent()
 
@@ -211,28 +325,34 @@ class Gui constructor(window: Long) {
             }
             """.trimIndent()
 
-        nk_buffer_init(cmds, ALLOCATOR, NK_BUFFER_DEFAULT_INITIAL_SIZE)
+        nk_buffer_init(commands, ALLOCATOR, NK_BUFFER_DEFAULT_INITIAL_SIZE)
+
+        program = glCreateProgram()
+        vertexShader = glCreateShader(GL_VERTEX_SHADER)
+        fragmentShader = glCreateShader(GL_FRAGMENT_SHADER)
 
         val attachShader = fun(shader: Int, shaderSource: String) {
             glShaderSource(shader, shaderSource)
             glCompileShader(shader)
             if (glGetShaderi(shader, GL_COMPILE_STATUS) != GL_TRUE) {
-                throw IllegalStateException()
+                throw IllegalStateException(glGetShaderInfoLog(shader))
             }
-            glAttachShader(prog, shader)
+            glAttachShader(program, shader)
         }
 
         attachShader(vertexShader, vertexShaderSource)
         attachShader(fragmentShader, fragmentShaderSource)
 
-        glLinkProgram(prog)
-        if (glGetProgrami(prog, GL_LINK_STATUS) != GL_TRUE) {
+        glLinkProgram(program)
+        if (glGetProgrami(program, GL_LINK_STATUS) != GL_TRUE) {
             throw IllegalStateException()
         }
 
-        val attribPosition = glGetAttribLocation(prog, "Position")
-        val attribUv = glGetAttribLocation(prog, "TexCoord")
-        val attribColor = glGetAttribLocation(prog, "Color")
+        uniformTexture = glGetUniformLocation(program, "Texture")
+        uniformProjection = glGetUniformLocation(program, "Projection")
+        val attribPosition = glGetAttribLocation(program, "Position")
+        val attribUv = glGetAttribLocation(program, "TexCoord")
+        val attribColor = glGetAttribLocation(program, "Color")
 
         glEnableVertexAttribArray(attribPosition)
         glEnableVertexAttribArray(attribUv)
@@ -248,7 +368,7 @@ class Gui constructor(window: Long) {
 
         glBindTexture(GL_TEXTURE_2D, nullTexId)
         MemoryStack.stackPush().use {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, it.ints(0xFFFFFFFF))
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, it.ints(Integer.MAX_VALUE))
         }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
@@ -262,68 +382,140 @@ class Gui constructor(window: Long) {
     private fun createDefaultFont() {
         val bitmapW = 1024
         val bitmapH = 1024
-        val fontHeight = 18
+        val fontHeight = 18f
         val fontTexId = glGenTextures()
 
         val fontInfo = STBTTFontinfo.create()
         val cdata = STBTTPackedchar.create(95)
-        val ttf = ioResourceToByteBuffer("FiraSans.ttf", 160 * 1024)
+        val ttf = ioResourceToByteBuffer("FiraSans-Regular.ttf", 160 * 1024)
+
+        var scale = 0f
+        var descent = 0f
 
         MemoryStack.stackPush().use {
             stbtt_InitFont(fontInfo, ttf)
+            scale = stbtt_ScaleForPixelHeight(fontInfo, fontHeight)
+
+            val d = it.mallocInt(1)
+            stbtt_GetFontVMetrics(fontInfo, null, d, null)
+            descent = d.get(0) * scale
+
+            val bitmap = memAlloc(bitmapW * bitmapH)
+            val pc = STBTTPackContext.mallocStack(it)
+            stbtt_PackBegin(pc, bitmap, bitmapW, bitmapH, 0, 1, NULL)
+            stbtt_PackSetOversampling(pc, 4, 4)
+            stbtt_PackFontRange(pc, ttf, 0, fontHeight, 32, cdata)
+            stbtt_PackEnd(pc)
+
+            val texture = memAlloc(bitmapW * bitmapH * 4)
+            (0..bitmap.capacity()).forEach { i ->
+                val bit = bitmap.get(i)
+                println(bit)
+                //texture.putInt((bit shl 24) or 0x00FFFFFF)
+            }
+            texture.flip()
+
+            glBindTexture(GL_TEXTURE_2D, fontTexId)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, bitmapW, bitmapH, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, texture)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+
+            memFree(texture)
+            memFree(bitmap)
         }
 
-        defaultFont
-                .width(fun(handle, h, text, len) {
-            val textWidth = 0f
-            MemoryStack.stackPush().use {
-                val unicode = it.mallocInt(1)
+        with (defaultFont) {
+            width(fun(_, _, text, len): Float {
+                var textWidth = 0f
+                MemoryStack.stackPush().use {
+                    val unicode = it.mallocInt(1)
 
-                val glyphLen = nnk_utf_decode(text, memAddress(unicode), len)
-                val textLen = glyphLen
+                    val glyphLen = nnk_utf_decode(text, memAddress(unicode), len)
+                    val textLen = glyphLen
 
-                if (glyphLen == 0) {
-                    return 0
-                }
-
-                val advance = it.mallocInt(1)
-                while (textLen <= len && glyphLen != 0) {
-                    if (unicode.get(0) == NK_UTF_INVALID) {
-                        break
+                    if (glyphLen == 0) {
+                        return 0f
                     }
 
-                    stbtt_GetCodepointHMetrics(fontInfo, unicode.get(0), advance, null)
-                    textWidth += advance.get(0) * scale
-                }
-            }
-        })
-                .height(FONT_HEIGHT)
-                .query(fun(handle, fontHeight, glyph, codepoint, nextCodepoint) {
-                    MemoryStack.stackPush().use {
-                        val x = it.floats(0.0f)
-                        val y = it.floats(0.0f)
+                    val advance = it.mallocInt(1)
+                    while (textLen <= len && glyphLen != 0) {
+                        if (unicode.get(0) == NK_UTF_INVALID) {
+                            break
+                        }
 
-                        val q = STBTTAlignedQuad.malloc()
-                        val advance = memAllocInt(1)
-
-                        stbtt_GetPackedQuad(cdata, BITMAP_W, BITMAP_H, codepoint - 32, x, y, q, false)
-                        stbtt_GetCodepointHMetrics(fontInfo, codepoint, advance, null)
-
-                        val ufg = NkUserFontGlyph.create(glyph)
-
-                        ufg.width(q.x1() - q.x0())
-                        ufg.height(q.y1() - q.y0())
-                        ufg.offset().set(q.x0(), q.y0() + (FONT_HEIGHT + descent))
-                        ufg.xadvance(advance.get(0) * scale)
-                        ufg.uv(0).set(q.s0(), q.t0())
-                        ufg.uv(1).set(q.s1(), q.t1())
-
-                        memFree(advance)
-                        q.free()
+                        stbtt_GetCodepointHMetrics(fontInfo, unicode.get(0), advance, null)
+                        textWidth += advance.get(0) * scale
                     }
-                })
-                .texture().id(fontTexId)
+                }
+
+                return textWidth
+            })
+            height(fontHeight)
+            query(fun(_, fontHeight, glyph, codepoint, _) {
+                MemoryStack.stackPush().use {
+                    val x = it.floats(0.0f)
+                    val y = it.floats(0.0f)
+
+                    val q = STBTTAlignedQuad.malloc()
+                    val advance = memAllocInt(1)
+
+                    stbtt_GetPackedQuad(cdata, bitmapW, bitmapH, codepoint - 32, x, y, q, false)
+                    stbtt_GetCodepointHMetrics(fontInfo, codepoint, advance, null)
+
+                    val ufg = NkUserFontGlyph.create(glyph)
+
+                    ufg.width(q.x1() - q.x0())
+                    ufg.height(q.y1() - q.y0())
+                    ufg.offset().set(q.x0(), q.y0() + (fontHeight + descent))
+                    ufg.xadvance(advance.get(0) * scale)
+                    ufg.uv(0).set(q.s0(), q.t0())
+                    ufg.uv(1).set(q.s1(), q.t1())
+
+                    memFree(advance)
+                    q.free()
+                }
+            })
+            texture().id(fontTexId)
+        }
 
         nk_style_set_font(context, defaultFont)
+    }
+
+    private fun ioResourceToByteBuffer(resource: String, bufferSize: Int): ByteBuffer {
+        val path = Paths.get(resource)
+        lateinit var buffer: ByteBuffer
+
+        if (Files.isReadable(path)) {
+            Files.newByteChannel(path).use {
+                buffer = BufferUtils.createByteBuffer(it.size() as Int + 1)
+                while (it.read(buffer) != -1) {
+                }
+            }
+        } else {
+            val source = Gui::class.java.classLoader.getResourceAsStream(resource)
+            Channels.newChannel(source).use {
+                buffer = BufferUtils.createByteBuffer(bufferSize)
+
+                while (true) {
+                    val bytes = it.read(buffer)
+                    if (bytes == -1) {
+                        break
+                    }
+                    if (buffer.remaining() == 0) {
+                        buffer = resizeBuffer(buffer, buffer.capacity() * 3 / 2)
+                    }
+                }
+            }
+        }
+
+        buffer.flip()
+        return buffer.slice()
+    }
+
+    private fun resizeBuffer(buffer: ByteBuffer, newCapacity: Int): ByteBuffer {
+        val newBuffer = BufferUtils.createByteBuffer(newCapacity)
+        buffer.flip()
+        newBuffer.put(buffer)
+        return newBuffer
     }
 }

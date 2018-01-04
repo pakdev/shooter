@@ -6,7 +6,6 @@ import org.lwjgl.glfw.GLFWErrorCallback
 import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.system.MemoryStack
-import org.lwjgl.nuklear.Nuklear.*
 import org.lwjgl.system.MemoryUtil.*
 
 class Game {
@@ -20,8 +19,9 @@ class Game {
 
         glfwFreeCallbacks(window)
         glfwDestroyWindow(window)
+
         glfwTerminate()
-        glfwSetErrorCallback(null).free()
+        glfwSetErrorCallback(null)?.free()
     }
 
     private fun initWindow(): Long {
@@ -61,33 +61,25 @@ class Game {
         glfwMakeContextCurrent(window)
         glfwSwapInterval(1) // enable v-sync
         glfwShowWindow(window)
+
+        GL.createCapabilities()
         return window
     }
 
     private fun loop(window: Long, gui: Gui) {
-        GL.createCapabilities()
-
         glClearColor(1.0f, 0.0f, 0.0f, 0.0f)
 
         while (!glfwWindowShouldClose(window)) {
-            nk_input_begin(gui.context)
-
             glfwPollEvents()
-            when {
-                gui.context.input().mouse().grab() -> glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN)
-                gui.context.input().mouse().grabbed() -> glfwSetCursorPos(window,
-                        gui.context.input().mouse().prev().x() as Double,
-                        gui.context.input().mouse().prev().y() as Double)
-                gui.context.input().mouse().ungrab() -> glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL)
-            }
-
-            nk_input_end(gui.context)
+            val frame = gui.getNewFrame()
 
             // do layout
 
+            // glViewport
+            // glClearColor
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
 
-            gui.render(true)
+            gui.render(frame, true)
             glfwSwapBuffers(window)
         }
 

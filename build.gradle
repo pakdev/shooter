@@ -37,6 +37,7 @@ mainClassName = "com.petesburgh.shooter.AppKt"
 
 repositories {
     mavenCentral()
+    maven { url "http://central.maven.org/maven2/org" }
 }
 
 dependencies {
